@@ -1,0 +1,340 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>多币种套利雷达 – CEX vs DEX 实时价差 + 理论利润</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    background: #020617;
+    color: #e5e7eb;
+  }
+  h1 {
+    margin: 0 0 6px;
+    font-size: 18px;
+  }
+  p {
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: #9ca3af;
+  }
+  .controls {
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #cbd5f5;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .controls label {
+    margin-right: 4px;
+  }
+  .controls input {
+    width: 110px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    border: 1px solid #1f2937;
+    background: #020617;
+    color: #e5e7eb;
+    font-size: 12px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+    font-size: 13px;
+  }
+  th, td {
+    padding: 8px 6px;
+    border-bottom: 1px solid #1f2937;
+    text-align: left;
+    vertical-align: middle;
+  }
+  th {
+    font-size: 12px;
+    color: #9ca3af;
+    font-weight: 500;
+  }
+  tbody tr:hover {
+    background: rgba(15,23,42,0.7);
+  }
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  .green {
+    color: #4ade80;
+    font-weight: 600;
+  }
+  .red {
+    color: #f97373;
+    font-weight: 600;
+  }
+  .muted {
+    color: #6b7280;
+    font-size: 11px;
+  }
+  #status {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #9ca3af;
+  }
+</style>
+</head>
+<body>
+  <h1>多币种套利雷达（CEX vs DEX 实时价差 + 理论利润）</h1>
+  <p>对比 Binance & Bybit 现货价格 与 Jupiter 聚合 DEX 价格，币种：SOL / BONK / JUP / WIF。每 10 秒自动刷新一次。<br>
+     当 |价差| ≥ <strong>1.00%</strong> 时，给出“可以套利”信号。理论利润只做粗略估算，不包含滑点和提现费用。</p>
+
+  <div class="controls">
+    <label for="capital">本金 (USDT)：</label>
+    <input id="capital" type="number" value="20000" min="100" step="100">
+    <span class="muted">用于估算单次套利理论可赚多少 USDT（按更便宜一侧买、更贵一侧卖计算）。</span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>币种</th>
+        <th>CEX 价格<br><span class="muted">Binance USDT</span></th>
+        <th>CEX 价格<br><span class="muted">Bybit USDT</span></th>
+        <th>DEX 价格<br><span class="muted">Jupiter 聚合（≈ USDC）</span></th>
+        <th>价差 %<br><span class="muted">DEX − CEX（以选用的 CEX 为基准）</span></th>
+        <th>套利信号</th>
+        <th>理论可套利利润<br><span class="muted">按当前本金估算</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>SOL</td>
+        <td id="SOL_cex_binance" class="num">–</td>
+        <td id="SOL_cex_bybit" class="num">–</td>
+        <td id="SOL_dex" class="num">–</td>
+        <td id="SOL_spread" class="num">–</td>
+        <td id="SOL_signal">–</td>
+        <td id="SOL_pnl" class="num">–</td>
+      </tr>
+      <tr>
+        <td>BONK</td>
+        <td id="BONK_cex_binance" class="num">–</td>
+        <td id="BONK_cex_bybit" class="num">–</td>
+        <td id="BONK_dex" class="num">–</td>
+        <td id="BONK_spread" class="num">–</td>
+        <td id="BONK_signal">–</td>
+        <td id="BONK_pnl" class="num">–</td>
+      </tr>
+      <tr>
+        <td>JUP</td>
+        <td id="JUP_cex_binance" class="num">–</td>
+        <td id="JUP_cex_bybit" class="num">–</td>
+        <td id="JUP_dex" class="num">–</td>
+        <td id="JUP_spread" class="num">–</td>
+        <td id="JUP_signal">–</td>
+        <td id="JUP_pnl" class="num">–</td>
+      </tr>
+      <tr>
+        <td>WIF</td>
+        <td id="WIF_cex_binance" class="num">–</td>
+        <td id="WIF_cex_bybit" class="num">–</td>
+        <td id="WIF_dex" class="num">–</td>
+        <td id="WIF_spread" class="num">–</td>
+        <td id="WIF_signal">–</td>
+        <td id="WIF_pnl" class="num">–</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div id="status">初始化中…</div>
+
+<script>
+  const THRESHOLD = 1.0; // 1%
+
+  const coins = [
+    { id: 'SOL',  cexSymbol: 'SOLUSDT'  },
+    { id: 'BONK', cexSymbol: 'BONKUSDT' },
+    { id: 'JUP',  cexSymbol: 'JUPUSDT'  },
+    { id: 'WIF',  cexSymbol: 'WIFUSDT'  }
+  ];
+
+  function fmt(v, digits = 4) {
+    if (v === null || v === undefined || isNaN(v)) return '–';
+    return Number(v).toFixed(digits);
+  }
+
+  async function fetchBinancePrices() {
+    const out = {};
+    for (const c of coins) {
+      try {
+        const res = await fetch('https://api.binance.com/api/v3/ticker/price?symbol=' + c.cexSymbol);
+        const json = await res.json();
+        const p = parseFloat(json.price);
+        if (!isNaN(p)) out[c.id] = p;
+      } catch (e) {
+        console.error('Binance error', c.id, e);
+      }
+    }
+    return out;
+  }
+
+  async function fetchBybitPrices() {
+    const out = {};
+    for (const c of coins) {
+      try {
+        const url = 'https://api.bybit.com/v5/market/tickers?category=spot&symbol=' + c.cexSymbol;
+        const res = await fetch(url);
+        const json = await res.json();
+        const t = json && json.result && json.result.list && json.result.list[0];
+        const price = t ? parseFloat(t.lastPrice || t.price || t.last_price) : NaN;
+        if (!isNaN(price)) out[c.id] = price;
+      } catch (e) {
+        console.error('Bybit error', c.id, e);
+      }
+    }
+    return out;
+  }
+
+  async function fetchDexPrices() {
+    const ids = coins.map(c => c.id).join(',');
+    const url = 'https://price.jup.ag/v6/price?ids=' + encodeURIComponent(ids);
+    const out = {};
+    try {
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json && json.data) {
+        for (const c of coins) {
+          const p = json.data[c.id] && json.data[c.id].price;
+          const f = parseFloat(p);
+          if (!isNaN(f)) out[c.id] = f;
+        }
+      }
+    } catch (e) {
+      console.error('Jupiter error', e);
+    }
+    return out;
+  }
+
+  function updateTable(cexBinance, cexBybit, dex) {
+    const statusEl = document.getElementById('status');
+    const capInput = document.getElementById('capital');
+    const capital = parseFloat(capInput.value || '0');
+
+    for (const c of coins) {
+      const id = c.id;
+      const bP = cexBinance[id];
+      const byP = cexBybit[id];
+      const dP = dex[id];
+
+      const bEl = document.getElementById(id + '_cex_binance');
+      const byEl = document.getElementById(id + '_cex_bybit');
+      const dEl = document.getElementById(id + '_dex');
+      const spreadEl = document.getElementById(id + '_spread');
+      const sigEl = document.getElementById(id + '_signal');
+      const pnlEl = document.getElementById(id + '_pnl');
+
+      // 显示价格
+      if (!bP) {
+        bEl.textContent = '无数据';
+      } else {
+        bEl.textContent = '$ ' + fmt(bP);
+      }
+
+      if (!byP) {
+        byEl.textContent = '无数据';
+      } else {
+        byEl.textContent = '$ ' + fmt(byP);
+      }
+
+      if (!dP) {
+        dEl.textContent = '无数据';
+      } else {
+        dEl.textContent = '$ ' + fmt(dP);
+      }
+
+      // 如果缺数据，清空其他
+      if (!dP || (!bP && !byP)) {
+        spreadEl.textContent = '–';
+        spreadEl.className = 'num';
+        sigEl.textContent = '数据不足';
+        sigEl.className = '';
+        pnlEl.textContent = '–';
+        continue;
+      }
+
+      // 选择用来比较的 CEX 价格：优先较便宜的一侧（套利时一般在更便宜处买）
+      let refCex = null;
+      if (bP && byP) {
+        refCex = Math.min(bP, byP);
+      } else {
+        refCex = bP || byP;
+      }
+
+      const spread = (dP - refCex) / refCex * 100;
+      const spreadStr = (spread >= 0 ? '+' : '') + spread.toFixed(3) + '%';
+      const absSpread = Math.abs(spread);
+
+      // 理论利润（按更便宜一侧买、更贵一侧卖）
+      let pnl = null;
+      if (capital > 0) {
+        const cheap = Math.min(refCex, dP);
+        const expensive = Math.max(refCex, dP);
+        // 资本 / 便宜价 = 买到的币数量； × 贵价 − 资本 = 理论利润
+        const coinsAmt = capital / cheap;
+        pnl = coinsAmt * expensive - capital;
+      }
+
+      spreadEl.textContent = spreadStr;
+
+      if (absSpread >= THRESHOLD) {
+        spreadEl.className = 'num green';
+        const direction = dP > refCex
+          ? 'CEX→DEX（CEX 买、DEX 卖）'
+          : 'DEX→CEX（DEX 买、CEX 卖）';
+        sigEl.textContent = '✔ 可以套利 · 建议方向：' + direction;
+        sigEl.className = 'green';
+      } else {
+        spreadEl.className = 'num red';
+        sigEl.textContent = '✖ 不建议套利 · 价差不足 1%';
+        sigEl.className = 'red';
+      }
+
+      if (pnl !== null) {
+        pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+      } else {
+        pnlEl.textContent = '–';
+      }
+    }
+  }
+
+  async function tick() {
+    const statusEl = document.getElementById('status');
+    statusEl.textContent = '拉取中…';
+
+    const [b, by, d] = await Promise.all([
+      fetchBinancePrices(),
+      fetchBybitPrices(),
+      fetchDexPrices()
+    ]);
+
+    updateTable(b, by, d);
+
+    const now = new Date();
+    statusEl.textContent = '上次更新：' + now.toLocaleTimeString();
+  }
+
+  document.getElementById('capital').addEventListener('input', () => {
+    // 不重新拉 API，只用最新数据重算一次
+    // 为简单起见，这里触发一次 tick()，也可以把数据缓存起来重算
+    tick();
+  });
+
+  tick();
+  setInterval(tick, 10000); // 每 10 秒更新一次
+</script>
+</body>
+</html>
